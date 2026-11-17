@@ -174,7 +174,7 @@ $JsonBody  = $PayloadObj | ConvertTo-Json -Depth 3 -Compress
 $Utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($JsonBody)
 
 try {
-    $Response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $Utf8Bytes -ContentType "application/json; charset=utf-8" -TimeoutSec 10
+   $null = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $Utf8Bytes -ContentType "application/json; charset=utf-8" -TimeoutSec 10
     Write-Host "[OK] Dados de $Hostname enviados com sucesso para $ServerUrl!" -ForegroundColor Green
 } catch {
     Write-Host "[ERRO] Falha ao conectar em $ServerUrl. Verifique se o servidor Flask ou o Tunel Cloudflare esta ativo." -ForegroundColor Red
