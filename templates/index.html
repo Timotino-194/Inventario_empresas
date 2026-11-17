@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Inventário & Manutenção TI - Clínica</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <!-- CABEÇALHO CORPORATIVO COM SELETOR DE ABAS -->
+    <div class="header">
+        <div class="brand-section">
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg class="icon icon-lg" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </div>
+                <div>
+                    <h1>Inventário e Manutenção de TI</h1>
+                    <div class="subtitle">Gestão de ativos, diagnósticos S.M.A.R.T., preventivas e impressoras</div>
+                </div>
+            </div>
+
+            <div class="nav-tabs">
+                <button class="tab-btn active" id="tabBtnInv" onclick="mudarAba('inventario')">
+                    <svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                    Inventário
+                </button>
+                <button class="tab-btn" id="tabBtnDash" onclick="mudarAba('dashboard')">
+                    <svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                    Dashboard
+                </button>
+            </div>
+        </div>
+
+        <div class="actions-bar">
+            <div class="search-wrapper" id="wrapperBusca">
+                <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input type="text" id="filtro" class="search-box" placeholder="Buscar PC, SO, patrimônio, IP..." onkeyup="filtrarTabela()">
+            </div>
+
+            <button class="btn" onclick="abrirModalImpressoras()" title="Gerenciar Impressoras de Rede">
+                <svg class="icon" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                Impressoras
+            </button>
+
+            <button class="btn" onclick="exportarCSV()" title="Exportar planilha CSV">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                CSV
+            </button>
+
+            <button class="btn" onclick="window.print()" title="Imprimir ou Salvar Relatório PDF">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                PDF
+            </button>
+
+            <button class="btn btn-icon-only" onclick="window.location.reload()" title="Atualizar dados">
+                <svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+
+            <button class="btn btn-icon-only" id="btnTheme" onclick="alternarTema()" title="Alternar Tema"></button>
+        </div>
+    </div>
+
+    <!-- CÁLCULO DE MÉTRICAS GERAIS -->
+    {% set ns = namespace(ok=0, avisos=0, criticos=0, alertas=0, imp_online=0, agendadas=0, win11=0, win10=0, outros_so=0) %}
+    {% if maquinas %}
+        {% for m in maquinas %}
+            {% if m.nivel_alerta == 'CRITICO' %}
+                {% set ns.criticos = ns.criticos + 1 %}
+                {% set ns.alertas = ns.alertas + 1 %}
+            {% elif m.nivel_alerta == 'AVISO' %}
+                {% set ns.avisos = ns.avisos + 1 %}
+                {% set ns.alertas = ns.alertas + 1 %}
+            {% else %}
+                {% set ns.ok = ns.ok + 1 %}
+            {% endif %}
+
+            {% if m.proxima_manutencao %}
+                {% set ns.agendadas = ns.agendadas + 1 %}
+            {% endif %}
+
+            {% set so_str = (m.sistema or '')|lower %}
+            {% if '11' in so_str %}
+                {% set ns.win11 = ns.win11 + 1 %}
+            {% elif '10' in so_str %}
+                {% set ns.win10 = ns.win10 + 1 %}
+            {% else %}
+                {% set ns.outros_so = ns.outros_so + 1 %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+    {% if impressoras %}
+        {% for imp in impressoras %}
+            {% if 'Online' in imp.status %}
+                {% set ns.imp_online = ns.imp_online + 1 %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+    {% set total_maq = maquinas|length if maquinas else 0 %}
+    {% set div_maq = total_maq if total_maq > 0 else 1 %}
+
+    <!-- TOP CARDS -->
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <div class="metric-info">
+                <span>Estações Monitoradas</span>
+                <strong>{{ total_maq }}</strong>
+            </div>
+            <div class="metric-icon">
+                <svg class="icon icon-lg" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-info">
+                <span>Máquinas em Alerta</span>
+                <strong class="{% if ns.alertas > 0 %}text-warning{% endif %}">{{ ns.alertas }}</strong>
+            </div>
+            <div class="metric-icon">
+                <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-info">
+                <span>Impressoras Online</span>
+                <strong>{{ ns.imp_online }} <span style="font-size: 13px; font-weight: 400; color: var(--text-muted);">/ {{ impressoras|length if impressoras else 0 }}</span></strong>
+            </div>
+            <div class="metric-icon">
+                <svg class="icon icon-lg" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            </div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-info">
+                <span>Preventivas Agendadas</span>
+                <strong>{{ ns.agendadas }}</strong>
+            </div>
+            <div class="metric-icon">
+                <svg class="icon icon-lg" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </div>
+        </div>
+    </div>
+
+    <!-- ABA 1: TABELA DE INVENTÁRIO -->
+    <div id="view-inventario">
+        <div class="card">
+            <div class="card-header">
+                <h2>
+                    <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                    Estações de Trabalho e Computadores
+                </h2>
+            </div>
+
+            <table id="tabela-maquinas">
+                <thead>
+                    <tr>
+                        <th>Setor / Identificação</th>
+                        <th>Hardware & Uptime</th>
+                        <th>Memória RAM</th>
+                        <th>Armazenamento (Discos) & Saúde</th>
+                        <th>Diagnóstico & Manutenção</th>
+                        <th class="col-acoes" style="width: 145px;">Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if maquinas %}
+                        {% for m in maquinas %}
+                        <tr>
+                            <td>
+                                <span class="setor-tag" data-host="{{ m.hostname }}" data-setor="{{ m.setor }}" onclick="editarSetor(this.dataset.host, this.dataset.setor)" title="Clique para alterar o setor">
+                                    {{ m.setor }}
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                                </span>
+                                <br><strong style="font-size: 14px;">{{ m.hostname }}</strong>
+
+                                <span class="subtext" title="Sistema Operacional">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                                    {{ m.sistema or 'Windows' }}
+                                </span>
+                                
+                                <span class="subtext">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                                    IP: <code>{{ m.ip_local }}</code>
+                                </span>
+                                
+                                <span class="subtext">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                                    Padrão: <strong>{{ m.impressora_padrao or 'Nenhuma' }}</strong>
+                                </span>
+
+                                <div class="meta-tag" data-host="{{ m.hostname }}" data-pat="{{ m.patrimonio_obs or '' }}" data-prox="{{ m.proxima_manutencao or '' }}" onclick="abrirModalMeta(this)" title="Editar Patrimônio, Usuário ou Observação">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                                    <span>{{ m.patrimonio_obs if m.patrimonio_obs else 'Definir Patrimônio / Resp.' }}</span>
+                                </div>
+                            </td>
+                            <td>
+                                <strong style="font-size: 13px;">{{ m.processador }}</strong>
+                                <span class="subtext">Placa: {{ m.placa_mae }}</span>
+                                <span class="subtext">Uptime: {{ m.uptime }}</span>
+                            </td>
+                            <td>
+                                <span class="badge {% if m.ram_uso_pct >= 85 %}vermelho{% elif m.ram_uso_pct >= 70 %}amarelo{% else %}verde{% endif %}">
+                                    {{ m.ram_uso_pct }}% em uso
+                                </span>
+                                <span class="subtext">{{ m.ram_detalhe }}</span>
+                            </td>
+                            <td>
+                                <span class="badge {% if m.disco_uso_pct >= 85 %}vermelho{% elif m.disco_uso_pct >= 75 %}amarelo{% else %}verde{% endif %}" title="Maior ocupação entre os discos">
+                                    {{ m.disco_uso_pct }}% ocupado
+                                </span>
+                                
+                                {% if m.disco_detalhe %}
+                                    {% for disco_item in m.disco_detalhe.split(' | ') %}
+                                        <div class="disk-item">
+                                            <svg class="icon icon-sm" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                                            <span>{{ disco_item }}</span>
+                                        </div>
+                                    {% endfor %}
+                                {% endif %}
+
+                                <span class="subtext">S.M.A.R.T: <strong>{{ m.smart_status or 'Healthy' }}</strong></span>
+                            </td>
+                            <td style="max-width: 340px;">
+                                {% set alerta = m.nivel_alerta or 'OK' %}
+                                <span class="badge {{ alerta }}">{{ alerta }}</span>
+                                <span style="font-size: 12.5px; font-weight: 600; margin-left: 4px;">{{ m.diagnostico or 'Operação normal' }}</span>
+                                
+                                <div class="manut-box">
+                                    <div class="manut-header">
+                                        <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                        Última Manutenção:
+                                    </div>
+                                    {{ m.ultima_manutencao or 'Nenhuma registrada' }}
+                                </div>
+
+                                <div class="diag-footer">
+                                    <div class="sched-tag" data-host="{{ m.hostname }}" data-pat="{{ m.patrimonio_obs or '' }}" data-prox="{{ m.proxima_manutencao or '' }}" onclick="abrirModalMeta(this)" title="Agendar próxima manutenção preventiva">
+                                        <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                                        {% if m.proxima_manutencao %}
+                                            Próx.: <strong>{{ m.proxima_manutencao }}</strong>
+                                        {% else %}
+                                            Agendar Preventiva
+                                        {% endif %}
+                                    </div>
+                                    <span class="sync-info" title="Última sincronização com a máquina">Sinc.: {{ m.ultima_atualizacao }}</span>
+                                </div>
+                            </td>
+                            <td class="col-acoes">
+                                <button class="btn-action" data-host="{{ m.hostname }}" onclick="abrirModalManutencao(this.dataset.host)">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                                    Manutenção
+                                </button>
+                                <button class="btn-action" data-host="{{ m.hostname }}" onclick="verHistoricoManutencao(this.dataset.host)">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                                    Histórico
+                                </button>
+                                <button class="btn-action" data-host="{{ m.hostname }}" data-pat="{{ m.patrimonio_obs or '' }}" data-prox="{{ m.proxima_manutencao or '' }}" onclick="abrirModalMeta(this)">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                                    Patrimônio
+                                </button>
+                                <button class="btn-action btn-del" data-host="{{ m.hostname }}" onclick="removerMaquina(this.dataset.host)">
+                                    <svg class="icon icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                    Remover
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="6" style="text-align: center; padding: 40px; color: var(--text-muted);">
+                                Nenhuma máquina cadastrada ainda.
+                            </td>
+                        </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- ABA 2: DASHBOARD ANALÍTICO -->
+    <div id="view-dashboard">
+        <div class="dash-grid">
+            
+            <!-- Card 1: Sistemas Operacionais -->
+            <div class="dash-card">
+                <h3>
+                    <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                    Distribuição por Sistema Operacional
+                </h3>
+                {% set pct_w11 = ((ns.win11 / div_maq) * 100)|round|int %}
+                {% set pct_w10 = ((ns.win10 / div_maq) * 100)|round|int %}
+                {% set pct_out = ((ns.outros_so / div_maq) * 100)|round|int %}
+
+                <div class="stat-row">
+                    <div class="stat-label">
+                        <span>Windows 11</span>
+                        <span class="muted">{{ ns.win11 }} máq. ({{ pct_w11 }}%)</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill fill-blue" data-width="{{ pct_w11 }}"></div>
+                    </div>
+                </div>
+
+                <div class="stat-row">
+                    <div class="stat-label">
+                        <span>Windows 10</span>
+                        <span class="muted">{{ ns.win10 }} máq. ({{ pct_w10 }}%)</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill fill-green" data-width="{{ pct_w10 }}"></div>
+                    </div>
+                </div>
+
+                {% if ns.outros_so > 0 %}
+                <div class="stat-row">
+                    <div class="stat-label">
+                        <span>Outros / Pendentes de atualização</span>
+                        <span class="muted">{{ ns.outros_so }} máq. ({{ pct_out }}%)</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill fill-amber" data-width="{{ pct_out }}"></div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Card 2: Saúde Geral do Parque -->
+            <div class="dash-card">
+                <h3>
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    Saúde e Diagnóstico do Parque
+                </h3>
+                {% set pct_ok = ((ns.ok / div_maq) * 100)|round|int %}
+                {% set pct_aviso = ((ns.avisos / div_maq) * 100)|round|int %}
+                {% set pct_crit = ((ns.criticos / div_maq) * 100)|round|int %}
+
+                <div class="stat-row">
+                    <div class="stat-label">
+                        <span>Operação Normal (OK)</span>
+                        <span class="muted">{{ ns.ok }} máq. ({{ pct_ok }}%)</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill fill-green" data-width="{{ pct_ok }}"></div>
+                    </div>
+                </div>
+
+                <div class="stat-row">
+                    <div class="stat-label">
+                        <span>Atenção / Aviso (Fadiga ou Disco > 80%)</span>
+                        <span class="muted">{{ ns.avisos }} máq. ({{ pct_aviso }}%)</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill fill-amber" data-width="{{ pct_aviso }}"></div>
+                    </div>
+                </div>
+
+                <div class="stat-row">
+                    <div class="stat-label">
+                        <span>Estado Crítico (S.M.A.R.T. ou Disco > 90%)</span>
+                        <span class="muted">{{ ns.criticos }} máq. ({{ pct_crit }}%)</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill fill-red" data-width="{{ pct_crit }}"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Card 3: Consumo de Memória RAM -->
+            <div class="dash-card">
+                <h3>
+                    <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/></svg>
+                    Ocupação de Memória RAM por Estação
+                </h3>
+                {% if maquinas %}
+                    {% for m in maquinas|sort(attribute='ram_uso_pct', reverse=True) %}
+                    <div class="stat-row">
+                        <div class="stat-label">
+                            <span>{{ m.hostname }} <span class="muted">({{ m.setor }})</span></span>
+                            <span class="muted">{{ m.ram_uso_pct }}%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill {% if m.ram_uso_pct >= 85 %}fill-red{% elif m.ram_uso_pct >= 70 %}fill-amber{% else %}fill-blue{% endif %}" data-width="{{ m.ram_uso_pct }}"></div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: var(--text-muted); font-size: 13px;">Sem dados disponíveis.</p>
+                {% endif %}
+            </div>
+
+            <!-- Card 4: Ocupação de Armazenamento -->
+            <div class="dash-card">
+                <h3>
+                    <svg class="icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                    Ocupação Máxima de Disco por Estação
+                </h3>
+                {% if maquinas %}
+                    {% for m in maquinas|sort(attribute='disco_uso_pct', reverse=True) %}
+                    <div class="stat-row">
+                        <div class="stat-label">
+                            <span>{{ m.hostname }} <span class="muted">({{ m.setor }})</span></span>
+                            <span class="muted">{{ m.disco_uso_pct }}%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill {% if m.disco_uso_pct >= 85 %}fill-red{% elif m.disco_uso_pct >= 75 %}fill-amber{% else %}fill-green{% endif %}" data-width="{{ m.disco_uso_pct }}"></div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: var(--text-muted); font-size: 13px;">Sem dados disponíveis.</p>
+                {% endif %}
+            </div>
+
+        </div>
+
+        <!-- Card 5: Distribuição por Setor -->
+        <div class="dash-card" style="margin-bottom: 30px;">
+            <h3>
+                <svg class="icon" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                Equipamentos por Setor da Clínica
+            </h3>
+            <div class="setor-pills">
+                {% if maquinas %}
+                    {% for setor_nome, lista_m in maquinas|groupby('setor') %}
+                    <div class="setor-pill">
+                        <span>{{ setor_nome }}</span>
+                        <strong>{{ lista_m|length }} <small style="font-size: 12px; font-weight: 400; color: var(--text-muted);">PC(s)</small></strong>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <span style="color: var(--text-muted); font-size: 13px;">Nenhum setor mapeado.</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Editar Patrimônio / Observação e Agendamento -->
+    <div class="modal-bg" id="modalMeta">
+        <div class="modal" style="width: 460px;">
+            <h3>
+                <svg class="icon" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                Ativo & Agendamento - <span id="metaHost" style="color: var(--accent);"></span>
+            </h3>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Patrimônio / Usuário Responsável / Observação:</label>
+                <input type="text" id="inputPatrimonio" placeholder="Ex: PAT-042 • Consultório Dr. Carlos">
+            </div>
+            <div class="form-group">
+                <label>Próxima Manutenção Preventiva Prevista:</label>
+                <input type="date" id="inputProximaManut">
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="fecharModais()">Cancelar</button>
+                <button class="btn btn-primary" onclick="salvarMeta()">Salvar Dados</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Gerenciar Impressoras de Rede -->
+    <div class="modal-bg" id="modalImpressoras">
+        <div class="modal" style="width: 720px;">
+            <h3>
+                <svg class="icon" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                Impressoras de Rede (Monitoramento TCP 9100 & Web)
+            </h3>
+            
+            <div style="display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap;">
+                <input type="text" id="impNome" class="search-box" placeholder="Nome (Ex: Brother Recepção)" style="flex: 1; min-width: 140px; padding-left: 12px;">
+                <input type="text" id="impIp" class="search-box" placeholder="IP (192.168.10.50)" style="width: 145px; padding-left: 12px;">
+                <input type="text" id="impSetor" class="search-box" placeholder="Setor" style="width: 115px; padding-left: 12px;">
+                <button class="btn btn-primary" onclick="adicionarImpressora()">Adicionar</button>
+            </div>
+
+            <div style="max-height: 320px; overflow-y: auto; margin-top: 15px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Impressora</th>
+                            <th>Setor</th>
+                            <th>Painel Web (Insumos)</th>
+                            <th>Status (9100)</th>
+                            <th style="text-align: center;">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if impressoras %}
+                            {% for imp in impressoras %}
+                            <tr>
+                                <td><strong>{{ imp.nome }}</strong></td>
+                                <td>{{ imp.setor }}</td>
+                                <td>
+                                    <a href="http://{{ imp.ip }}" target="_blank" title="Abrir interface web da impressora" style="color: var(--accent); text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
+                                        <code>{{ imp.ip }}</code>
+                                        <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                    </a>
+                                </td>
+                                <td>
+                                    <span class="badge {% if 'Online' in imp.status %}verde{% else %}vermelho{% endif %}">
+                                        {{ imp.status }}
+                                    </span>
+                                    <span class="subtext">Verificado: {{ imp.ultima_verificacao or 'Nunca' }}</span>
+                                </td>
+                                <td style="display: flex; gap: 6px; justify-content: center;">
+                                    <button class="btn" style="padding: 5px 10px; font-size: 12px;" data-id="{{ imp.id }}" onclick="testarImpressora(this.dataset.id)">Testar</button>
+                                    <button class="btn btn-del" style="padding: 5px 8px;" data-id="{{ imp.id }}" onclick="removerImpressora(this.dataset.id)" title="Remover">
+                                        <svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 25px;">
+                                    Nenhuma impressora de rede cadastrada.
+                                </td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn" onclick="fecharModais()">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Lançar Manutenção -->
+    <div class="modal-bg" id="modalManutencao">
+        <div class="modal">
+            <h3>
+                <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                Registrar Manutenção - <span id="manutHost" style="color: var(--accent);"></span>
+            </h3>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Tipo de Serviço:</label>
+                <select id="manutTipo">
+                    <option value="Preventiva">Preventiva (Limpeza física, pasta térmica, otimização)</option>
+                    <option value="Corretiva">Corretiva (Formatação, reparo de SO, substituição)</option>
+                    <option value="Upgrade">Upgrade (Expansão de RAM, migração SSD)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Técnico Responsável:</label>
+                <input type="text" id="manutTecnico" value="José (TI)">
+            </div>
+            <div class="form-group">
+                <label>Descrição Técnica:</label>
+                <textarea id="manutDesc" rows="3" placeholder="Descreva os procedimentos realizados..."></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="fecharModais()">Cancelar</button>
+                <button class="btn btn-primary" onclick="salvarManutencao()">Salvar Registro</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Histórico -->
+    <div class="modal-bg" id="modalHistorico">
+        <div class="modal">
+            <h3>
+                <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                Histórico de Manutenções - <span id="histHost" style="color: var(--accent);"></span>
+            </h3>
+            <div class="hist-list" id="listaHistorico"></div>
+            <div class="modal-footer">
+                <button class="btn" onclick="fecharModais()">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
