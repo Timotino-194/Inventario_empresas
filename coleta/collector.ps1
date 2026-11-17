@@ -1,140 +1,182 @@
-# NOME OU IP DO TEU PC QUE RODA O VSCODE:
-$ServerHost = "Servidor TI"
+# ==============================================================================
+# AGENTE DE COLETA DE INVENTARIO DE TI (WMI / CIM)
+# ==============================================================================
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-if ($env:COMPUTERNAME -eq $ServerHost) {
-    $TargetHost = "127.0.0.1"
+# ------------------------------------------------------------------------------
+# 1. CONFIGURACAO DE ROTAS (Fallback Automatico: Rede Local -> Cloudflare)
+# ------------------------------------------------------------------------------
+$LocalHostName = "SERVIDOR-TI" # Nome ou IP da maquina servidora na LAN (ex: "192.168.1.100")
+$CloudflareUrl = "LINK CLOUDFARE AQUI" # URL do Tunel Cloudflare
+
+# Resolve endereco local
+if ($env:COMPUTERNAME -eq $LocalHostName) {
+    $TargetLocal = "127.0.0.1"
 } else {
-    $ResolvedIp = (Resolve-DnsName -Name $ServerHost -Type A -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
-    $TargetHost = if ($ResolvedIp) { $ResolvedIp } else { $ServerHost }
+    $ResolvedIp = (Resolve-DnsName -Name $LocalHostName -Type A -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
+    $TargetLocal = if ($ResolvedIp) { $ResolvedIp } else { $LocalHostName }
 }
 
-$ServerUrl = "http://${TargetHost}:5000/api/specs"
+$UrlLocal   = "http://${TargetLocal}:5000/api/specs"
+$UrlExterna = "$($CloudflareUrl.TrimEnd('/'))/api/specs"
+
+# Testa se a porta 5000 responde na rede local (timeout de 2 segundos)
+$ServerUrl = $UrlExterna
+try {
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $conn = $tcp.BeginConnect($TargetLocal, 5000, $null, $null)
+    if ($conn.AsyncWaitHandle.WaitOne(2000, $false) -and $tcp.Connected) {
+        $ServerUrl = $UrlLocal
+        Write-Host "[REDE] Servidor local detectado ($TargetLocal)." -ForegroundColor Green
+    }
+    $tcp.Close()
+} catch {
+    # Segue silenciosamente para a rota externa
+}
+
+if ($ServerUrl -eq $UrlExterna) {
+    Write-Host "[REDE] Servidor local inacessivel. Usando rota externa Cloudflare..." -ForegroundColor Yellow
+}
 
 Write-Host "Coletando especificacoes de hardware e todos os discos..." -ForegroundColor Cyan
 
-# 1. Hostname, Sistema Operacional (limpo) e Uptime
-$ComputerName = $env:COMPUTERNAME
-$OSInfo = Get-CimInstance Win32_OperatingSystem
-$OSArch = $OSInfo.OSArchitecture
-$OSClean = ($OSInfo.Caption -replace "^Microsoft\s+", "").Trim()
-$OS = "$OSClean ($OSArch)"
+# ------------------------------------------------------------------------------
+# 2. COLETA DE SISTEMA, HARDWARE E REDE
+# ------------------------------------------------------------------------------
+$Hostname = $env:COMPUTERNAME
 
-$UptimeSpan = (Get-Date) - $OSInfo.LastBootUpTime
-$Uptime = "$($UptimeSpan.Days)d $($UptimeSpan.Hours)h $($UptimeSpan.Minutes)m"
+# Sistema Operacional e Uptime
+$OS        = Get-CimInstance Win32_OperatingSystem
+$Sistema   = $OS.Caption -replace "Microsoft ", ""
+$UptimeSpan = (Get-Date) - $OS.LastBootUpTime
+$UptimeDias = [int]$UptimeSpan.TotalDays
+$UptimeStr  = "$($UptimeSpan.Days)d $($UptimeSpan.Hours)h $($UptimeSpan.Minutes)m"
 
-# 2. IP Local da Rede
-$LocalIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
-if (-not $LocalIp) { $LocalIp = "127.0.0.1" }
+# Processador e Placa-Mae
+$CPU       = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()
+$BoardInfo = Get-CimInstance Win32_BaseBoard | Select-Object -First 1
+$PlacaMae  = "$($BoardInfo.Manufacturer) $($BoardInfo.Product)".Trim()
 
-# 3. Processador e Placa-Mãe
-$CPU = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()
-$Board = Get-CimInstance Win32_BaseBoard
-$Motherboard = "$($Board.Manufacturer) $($Board.Product)".Trim()
+# Memoria RAM
+$RamTotalGB = [math]::Round($OS.TotalVisibleMemorySize / 1MB, 1)
+$RamLivreGB = [math]::Round($OS.FreePhysicalMemory / 1MB, 1)
+$RamUsadaGB = [math]::Round($RamTotalGB - $RamLivreGB, 1)
+$RamUsoPct  = [int][math]::Round(($RamUsadaGB / $RamTotalGB) * 100, 0)
+$RamDetalhe = "$RamUsadaGB GB / $RamTotalGB GB"
 
-# 4. Memória RAM + Quantidade de Pentes
-$TotalRAM_GB = [Math]::Round($OSInfo.TotalVisibleMemorySize / 1MB, 1)
-$FreeRAM_GB = [Math]::Round($OSInfo.FreePhysicalMemory / 1MB, 1)
-$UsedRAM_GB = [Math]::Round($TotalRAM_GB - $FreeRAM_GB, 1)
-$RAM_Percent = [Math]::Round(($UsedRAM_GB / $TotalRAM_GB) * 100, 0)
-$RamSticks = @(Get-CimInstance Win32_PhysicalMemory).Count
+# IP Local (Prioriza interface com Gateway padrao ativo)
+$IpLocal = (
+    Get-NetIPConfiguration |
+    Where-Object { $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq "Up" } |
+    Select-Object -First 1
+).IPv4Address.IPAddress
 
-# 5. Todos os Discos Fixos (C:, D:, E:...) + Tipo (SSD/HDD) + S.M.A.R.T.
-$LogicalDisks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
-$DiskStrings = @()
-$MaxDiskPercent = 0
+if (-not $IpLocal) {
+    $IpLocal = (
+        Get-NetIPAddress -AddressFamily IPv4 |
+        Where-Object { $_.IPAddress -notmatch "^(127\.|169\.254\.)" } |
+        Select-Object -First 1
+    ).IPAddress
+}
+if (-not $IpLocal) { $IpLocal = "Nao identificado" }
 
-foreach ($ld in $LogicalDisks) {
-    if ($ld.Size -gt 0) {
-        $TotalGB = [Math]::Round($ld.Size / 1GB, 0)
-        $FreeGB = [Math]::Round($ld.FreeSpace / 1GB, 0)
-        $UsedGB = $TotalGB - $FreeGB
-        $Pct = [Math]::Round(($UsedGB / $TotalGB) * 100, 0)
-        if ($Pct -gt $MaxDiskPercent) { $MaxDiskPercent = $Pct }
+# Impressora Padrao
+$ImpPadrao = (Get-CimInstance Win32_Printer | Where-Object { $_.Default -eq $true } | Select-Object -First 1).Name
+if (-not $ImpPadrao) { $ImpPadrao = "Nenhuma" }
 
-        $MediaType = "Disco"
-        $DriveLetter = $ld.DeviceID.TrimEnd(':')
-        try {
-            $DiskNum = (Get-Partition -DriveLetter $DriveLetter -ErrorAction Stop | Get-Disk -ErrorAction Stop).Number
-            $Phys = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq $DiskNum } | Select-Object -First 1
-            if ($Phys.MediaType -and $Phys.MediaType -ne "Unspecified") { $MediaType = $Phys.MediaType }
-        } catch {}
+# ------------------------------------------------------------------------------
+# 3. COLETA DE ARMAZENAMENTO (MULTIPLOS DISCOS) E S.M.A.R.T.
+# ------------------------------------------------------------------------------
+$DiscosFixos   = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+$ListaDiscos   = @()
+$MaiorUsoDisco = 0
 
-        $DiskStrings += "$($ld.DeviceID) $MediaType $TotalGB GB ($FreeGB GB livres - $Pct%)"
+foreach ($d in $DiscosFixos) {
+    if ($d.Size -gt 0) {
+        $TotalGB = [math]::Round($d.Size / 1GB, 0)
+        $LivreGB = [math]::Round($d.FreeSpace / 1GB, 0)
+        $UsadoGB = $TotalGB - $LivreGB
+        $PctUso  = [int][math]::Round(($UsadoGB / $TotalGB) * 100, 0)
+
+        if ($PctUso -gt $MaiorUsoDisco) { $MaiorUsoDisco = $PctUso }
+        $ListaDiscos += "$($d.DeviceID) $UsadoGB/$TotalGB GB ($PctUso%)"
     }
 }
+$DiscoDetalhe = if ($ListaDiscos.Count -gt 0) { $ListaDiscos -join " | " } else { "Sem disco" }
 
-$DiscoDetalhe = if ($DiskStrings.Count -gt 0) { $DiskStrings -join " | " } else { "N/A" }
-$Disk_Percent = $MaxDiskPercent
-
-# Verifica S.M.A.R.T. de todos os discos físicos instalados
+# Status S.M.A.R.T. dos discos fisicos
 $SmartStatus = "Healthy"
 try {
-    $AllPhys = Get-PhysicalDisk
-    $Unhealthy = $AllPhys | Where-Object { $_.HealthStatus -ne "Healthy" }
+    $PhysicalDisks = Get-PhysicalDisk -ErrorAction Stop
+    $Unhealthy = $PhysicalDisks | Where-Object { $_.HealthStatus -ne "Healthy" }
     if ($Unhealthy) {
-        $SmartStatus = ($Unhealthy | ForEach-Object { "$($_.FriendlyName): $($_.HealthStatus)" }) -join ", "
+        $SmartStatus = ($Unhealthy.HealthStatus | Select-Object -Unique) -join ", "
     }
-} catch {}
+} catch {
+    $WmiDisks = Get-CimInstance Win32_DiskDrive
+    $BadWmi   = $WmiDisks | Where-Object { $_.Status -ne "OK" }
+    if ($BadWmi) { $SmartStatus = "Alerta S.M.A.R.T." }
+}
 
-# 6. Impressora Padrão do Windows
-$DefaultPrinter = "Nenhuma"
-try {
-    $PrinterObj = Get-CimInstance Win32_Printer | Where-Object { $_.Default -eq $true } | Select-Object -First 1
-    if ($PrinterObj -and $PrinterObj.Name) { $DefaultPrinter = $PrinterObj.Name }
-} catch {}
-
-# 7. Diagnóstico Automático e Nível de Alerta
+# ------------------------------------------------------------------------------
+# 4. MOTOR DE DIAGNOSTICO PREVENTIVO
+# ------------------------------------------------------------------------------
 $NivelAlerta = "OK"
-$Motivos = @()
+$Motivos     = @()
 
-if ($SmartStatus -ne "Healthy") {
+if ($SmartStatus -ne "Healthy" -and $SmartStatus -ne "OK") {
     $NivelAlerta = "CRITICO"
-    $Motivos += "Saude do disco comprometida ($SmartStatus)"
-}
-if ($Disk_Percent -ge 90) {
-    $NivelAlerta = "CRITICO"
-    $Motivos += "Armazenamento critico ($Disk_Percent% ocupado)"
-} elseif ($Disk_Percent -ge 80 -and $NivelAlerta -ne "CRITICO") {
-    $NivelAlerta = "AVISO"
-    $Motivos += "Espaco em disco reduzido ($Disk_Percent% ocupado)"
+    $Motivos += "Falha S.M.A.R.T. ($SmartStatus)"
 }
 
-if ($RAM_Percent -ge 90) {
+if ($MaiorUsoDisco -ge 90) {
+    $NivelAlerta = "CRITICO"
+    $Motivos += "Disco critico ($MaiorUsoDisco%)"
+} elseif ($MaiorUsoDisco -ge 80) {
     if ($NivelAlerta -ne "CRITICO") { $NivelAlerta = "AVISO" }
-    $Motivos += "Uso elevado de RAM ($RAM_Percent%)"
+    $Motivos += "Disco cheio ($MaiorUsoDisco%)"
 }
 
-if ($UptimeSpan.Days -ge 5) {
-    if ($NivelAlerta -eq "OK") { $NivelAlerta = "AVISO" }
-    $Motivos += "Ligado ha $($UptimeSpan.Days) dias sem reiniciar (Fadiga de sistema)"
+if ($RamUsoPct -ge 90) {
+    if ($NivelAlerta -ne "CRITICO") { $NivelAlerta = "AVISO" }
+    $Motivos += "RAM saturada ($RamUsoPct%)"
 }
 
-$Diagnostico = if ($Motivos.Count -gt 0) { $Motivos -join " | " } else { "Operação normal" }
+if ($UptimeDias -ge 15) {
+    if ($NivelAlerta -ne "CRITICO") { $NivelAlerta = "AVISO" }
+    $Motivos += "Fadiga de Uptime (${UptimeDias}d sem reiniciar)"
+}
 
-# Montando JSON em UTF-8
-$Body = @{
-    hostname          = $ComputerName
-    ip_local          = $LocalIp
-    sistema           = $OS
-    placa_mae         = $Motherboard
+$Diagnostico = if ($Motivos.Count -gt 0) { $Motivos -join " | " } else { "Operacao normal" }
+
+# ------------------------------------------------------------------------------
+# 5. ENVIO DO PAYLOAD JSON PARA A API FLASK
+# ------------------------------------------------------------------------------
+$PayloadObj = @{
+    hostname          = $Hostname
+    sistema           = $Sistema
+    ip_local          = $IpLocal
+    impressora_padrao = $ImpPadrao
     processador       = $CPU
-    ram_detalhe       = "$TotalRAM_GB GB ($RamSticks pente(s)) - Uso: $UsedRAM_GB GB"
-    ram_uso_pct       = $RAM_Percent
+    placa_mae         = $PlacaMae
+    uptime            = $UptimeStr
+    ram_uso_pct       = $RamUsoPct
+    ram_detalhe       = $RamDetalhe
+    disco_uso_pct     = $MaiorUsoDisco
     disco_detalhe     = $DiscoDetalhe
-    disco_uso_pct     = $Disk_Percent
     smart_status      = $SmartStatus
-    impressora_padrao = $DefaultPrinter
     nivel_alerta      = $NivelAlerta
     diagnostico       = $Diagnostico
-    uptime            = $Uptime
-} | ConvertTo-Json
+}
 
-$BodyBytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
+$JsonBody  = $PayloadObj | ConvertTo-Json -Depth 3 -Compress
+$Utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($JsonBody)
 
 try {
-    Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $BodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec 10 -ErrorAction Stop | Out-Null
-    Write-Host "[OK] Sucesso! Dados de [$ComputerName] enviados para o painel!" -ForegroundColor Green
+    $Response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $Utf8Bytes -ContentType "application/json; charset=utf-8" -TimeoutSec 10
+    Write-Host "[OK] Dados de $Hostname enviados com sucesso para $ServerUrl!" -ForegroundColor Green
 } catch {
-    Write-Host "[ERRO] Falha ao conectar em $ServerUrl. Verifique se o servidor Flask esta aberto." -ForegroundColor Red
-    Write-Host "Detalhe: $_" -ForegroundColor Yellow
+    Write-Host "[ERRO] Falha ao conectar em $ServerUrl. Verifique se o servidor Flask ou o Tunel Cloudflare esta ativo." -ForegroundColor Red
+    Write-Host "Detalhe: $($_.Exception.Message)" -ForegroundColor Yellow
 }
